@@ -248,6 +248,8 @@ func (wg *Wireguard) handleTcp(r *tcp.ForwarderRequest) {
 		Port: int(id.LocalPort),
 	}
 
+	slog.Debug("handling tcp conn from wireguard", "loc", loc.String())
+
 	r.Complete(false)
 	ep.SocketOptions().SetDelayOption(true)
 
