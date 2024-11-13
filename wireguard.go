@@ -288,7 +288,7 @@ func (wg *Wireguard) setupForwarding() error {
 	return nil
 }
 
-func NewServer(addr string, debug bool) (*Wireguard, error) {
+func NewServer(addr string) (*Wireguard, error) {
 	localAddr, err := netip.ParseAddr(addr)
 	if err != nil {
 		return nil, err
@@ -299,15 +299,17 @@ func NewServer(addr string, debug bool) (*Wireguard, error) {
 		return nil, err
 	}
 
-	var level = device.LogLevelError
-	if debug {
-		level = device.LogLevelVerbose
-	}
-
 	dev := device.NewDevice(
 		tun,
 		conn.NewDefaultBind(),
-		device.NewLogger(level, "wireguard server: "),
+		&device.Logger{
+			Verbosef: func(format string, args ...any) {
+				slog.Debug("wireguard server", "msg", fmt.Sprintf(format, args...))
+			},
+			Errorf: func(format string, args ...any) {
+				slog.Error("wireguard server", "msg", fmt.Sprintf(format, args...))
+			},
+		},
 	)
 
 	// Generate Server Key Pair
@@ -339,7 +341,7 @@ func NewServer(addr string, debug bool) (*Wireguard, error) {
 	return wg, nil
 }
 
-func NewFromConfig(addr string, config string, debug bool) (*Wireguard, error) {
+func NewFromConfig(addr string, config string) (*Wireguard, error) {
 	localAddr, err := netip.ParseAddr(addr)
 	if err != nil {
 		return nil, err
@@ -350,15 +352,17 @@ func NewFromConfig(addr string, config string, debug bool) (*Wireguard, error) {
 		return nil, err
 	}
 
-	var level = device.LogLevelError
-	if debug {
-		level = device.LogLevelVerbose
-	}
-
 	dev := device.NewDevice(
 		tun,
 		conn.NewDefaultBind(),
-		device.NewLogger(level, "wireguard client: "),
+		&device.Logger{
+			Verbosef: func(format string, args ...any) {
+				slog.Debug("wireguard client", "msg", fmt.Sprintf(format, args...))
+			},
+			Errorf: func(format string, args ...any) {
+				slog.Error("wireguard client", "msg", fmt.Sprintf(format, args...))
+			},
+		},
 	)
 
 	if err := dev.IpcSet(config); err != nil {
