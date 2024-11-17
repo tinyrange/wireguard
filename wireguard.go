@@ -231,6 +231,37 @@ func (wg *Wireguard) ListenTCPAddr(listen string) (net.Listener, error) {
 	return listener, nil
 }
 
+func (wg *Wireguard) RemoveTCPListener(listen string) error {
+	ip, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return err
+	}
+
+	ipString := net.ParseIP(ip)
+	if ipString == nil {
+		return fmt.Errorf("invalid ip: %s", ip)
+	}
+
+	portInt, err := net.LookupPort("tcp", port)
+	if err != nil {
+		return err
+	}
+
+	addr := net.TCPAddrFromAddrPort(
+		netip.AddrPortFrom(
+			netip.AddrFrom4([4]byte(ipString.To4())),
+			uint16(portInt),
+		),
+	)
+
+	if listener, ok := wg.listeners[addr.String()]; ok {
+		delete(wg.listeners, addr.String())
+		close(listener.conns)
+	}
+
+	return nil
+}
+
 func (wg *Wireguard) handleTcp(r *tcp.ForwarderRequest) {
 	id := r.ID()
 
@@ -286,6 +317,10 @@ func (wg *Wireguard) setupForwarding() error {
 	wg.stack.Stack().SetTransportProtocolHandler(tcp.ProtocolNumber, tcpFwd.HandlePacket)
 
 	return nil
+}
+
+func (wg *Wireguard) GetConfig() (string, error) {
+	return wg.dev.IpcGet()
 }
 
 func NewServer(addr string) (*Wireguard, error) {
