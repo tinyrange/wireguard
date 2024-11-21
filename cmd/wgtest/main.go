@@ -37,7 +37,7 @@ func checkResponse(wg *wireguard.Wireguard, url string, expected string) error {
 
 func appMain() error {
 	slog.Info("starting server")
-	wg, err := wireguard.NewServer("10.0.0.1")
+	wg, err := wireguard.NewServer("10.0.0.1", 1420)
 	if err != nil {
 		return fmt.Errorf("failed to create wireguard server: %w", err)
 	}
@@ -50,7 +50,7 @@ func appMain() error {
 	// slog.Info("using config", "config", peer)
 
 	slog.Info("starting client")
-	wg2, err := wireguard.NewFromConfig("10.0.0.2", peer)
+	wg2, err := wireguard.NewFromConfig("10.0.0.2", 1420, peer)
 	if err != nil {
 		return fmt.Errorf("failed to create wireguard client: %w", err)
 	}

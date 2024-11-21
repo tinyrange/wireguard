@@ -323,13 +323,13 @@ func (wg *Wireguard) GetConfig() (string, error) {
 	return wg.dev.IpcGet()
 }
 
-func NewServer(addr string) (*Wireguard, error) {
+func NewServer(addr string, mtu int) (*Wireguard, error) {
 	localAddr, err := netip.ParseAddr(addr)
 	if err != nil {
 		return nil, err
 	}
 
-	tun, stack, err := CreateNetTUN([]netip.Addr{localAddr}, []netip.Addr{}, 1420, false)
+	tun, stack, err := CreateNetTUN([]netip.Addr{localAddr}, []netip.Addr{}, mtu, false)
 	if err != nil {
 		return nil, err
 	}
@@ -376,13 +376,13 @@ func NewServer(addr string) (*Wireguard, error) {
 	return wg, nil
 }
 
-func NewFromConfig(addr string, config string) (*Wireguard, error) {
+func NewFromConfig(addr string, mtu int, config string) (*Wireguard, error) {
 	localAddr, err := netip.ParseAddr(addr)
 	if err != nil {
 		return nil, err
 	}
 
-	tun, stack, err := CreateNetTUN([]netip.Addr{localAddr}, []netip.Addr{}, 1420, false)
+	tun, stack, err := CreateNetTUN([]netip.Addr{localAddr}, []netip.Addr{}, mtu, false)
 	if err != nil {
 		return nil, err
 	}
