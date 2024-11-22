@@ -19,6 +19,10 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 )
 
+type NetHandler interface {
+	HandleConn(network string, ip net.IP, port uint16, conn net.Conn)
+}
+
 func generateKeyPair() (device.NoisePrivateKey, device.NoisePublicKey, error) {
 	var sk device.NoisePrivateKey
 	var pk device.NoisePublicKey
@@ -39,12 +43,172 @@ func generateKeyPair() (device.NoisePrivateKey, device.NoisePublicKey, error) {
 	return sk, pk, nil
 }
 
+type SimpleFlowHandler struct {
+	listeners map[string]*listener
+}
+
+func (s *SimpleFlowHandler) getListenerForAddr(loc *net.TCPAddr) (*listener, error) {
+	// Try a direct match.
+	if listen, ok := s.listeners[loc.String()]; ok {
+		return listen, nil
+	}
+
+	// Try matching on any port number.
+	if listen, ok := s.listeners[(&net.TCPAddr{
+		IP:   loc.IP,
+		Port: 0,
+	}).String()]; ok {
+		return listen, nil
+	}
+
+	// Try matching on any IP address.
+	if listen, ok := s.listeners[(&net.TCPAddr{
+		IP:   net.IP{0, 0, 0, 0},
+		Port: loc.Port,
+	}).String()]; ok {
+		return listen, nil
+	}
+
+	// Fall back to the default root if it exists.
+	if listen, ok := s.listeners[(&net.TCPAddr{
+		IP:   net.IP{0, 0, 0, 0},
+		Port: 0,
+	}).String()]; ok {
+		return listen, nil
+	}
+
+	return nil, fmt.Errorf("no listener for connection to: %s", loc.String())
+}
+
+type listener struct {
+	closed bool
+	conns  chan net.Conn
+	addr   *net.TCPAddr
+}
+
+// Accept implements net.Listener.
+func (l *listener) Accept() (net.Conn, error) {
+	if l.closed {
+		return nil, net.ErrClosed
+	}
+
+	conn := <-l.conns
+
+	return conn, nil
+}
+
+// Addr implements net.Listener.
+func (l *listener) Addr() net.Addr {
+	return l.addr
+}
+
+// Close implements net.Listener.
+func (l *listener) Close() error {
+	if !l.closed {
+		l.closed = true
+		close(l.conns)
+	}
+
+	return nil
+}
+
+var (
+	_ net.Listener = &listener{}
+)
+
+func (s *SimpleFlowHandler) ListenTCPAddr(listen string) (net.Listener, error) {
+	ip, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return nil, err
+	}
+
+	ipString := net.ParseIP(ip)
+	if ipString == nil {
+		return nil, fmt.Errorf("invalid ip: %s", ip)
+	}
+
+	portInt, err := net.LookupPort("tcp", port)
+	if err != nil {
+		return nil, err
+	}
+
+	listener := &listener{
+		addr: net.TCPAddrFromAddrPort(
+			netip.AddrPortFrom(
+				netip.AddrFrom4([4]byte(ipString.To4())),
+				uint16(portInt),
+			),
+		),
+		conns: make(chan net.Conn, 8),
+	}
+
+	s.listeners[listener.addr.String()] = listener
+
+	return listener, nil
+}
+
+func (s *SimpleFlowHandler) RemoveTCPListener(listen string) error {
+	ip, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return err
+	}
+
+	ipString := net.ParseIP(ip)
+	if ipString == nil {
+		return fmt.Errorf("invalid ip: %s", ip)
+	}
+
+	portInt, err := net.LookupPort("tcp", port)
+	if err != nil {
+		return err
+	}
+
+	addr := net.TCPAddrFromAddrPort(
+		netip.AddrPortFrom(
+			netip.AddrFrom4([4]byte(ipString.To4())),
+			uint16(portInt),
+		),
+	)
+
+	if listener, ok := s.listeners[addr.String()]; ok {
+		delete(s.listeners, addr.String())
+		close(listener.conns)
+	}
+
+	return nil
+}
+
+// HandleConn implements NetHandler.
+func (s *SimpleFlowHandler) HandleConn(network string, ip net.IP, port uint16, conn net.Conn) {
+	listen, err := s.getListenerForAddr(&net.TCPAddr{
+		IP:   ip,
+		Port: int(port),
+	})
+	if err != nil {
+		slog.Error("error handling tcp conn", "err", err)
+		conn.Close()
+		return
+	}
+
+	listen.conns <- conn
+}
+
+var (
+	_ NetHandler = &SimpleFlowHandler{}
+)
+
+func NewSimpleFlowHandler() *SimpleFlowHandler {
+	return &SimpleFlowHandler{
+		listeners: make(map[string]*listener),
+	}
+}
+
 type Wireguard struct {
 	dev       *device.Device
 	stack     *Net
 	publicKey device.NoisePublicKey
 	allowed   []string
-	listeners map[string]*listener
+	handler   NetHandler
 }
 
 func (wg *Wireguard) Dial(network string, addr string) (net.Conn, error) {
@@ -131,137 +295,6 @@ allowed_ip=0.0.0.0/0
 endpoint=%s`, privateKey, publicKey, endpoint), nil
 }
 
-func (wg *Wireguard) getListenerForAddr(loc *net.TCPAddr) (*listener, error) {
-	// Try a direct match.
-	if listen, ok := wg.listeners[loc.String()]; ok {
-		return listen, nil
-	}
-
-	// Try matching on any port number.
-	if listen, ok := wg.listeners[(&net.TCPAddr{
-		IP:   loc.IP,
-		Port: 0,
-	}).String()]; ok {
-		return listen, nil
-	}
-
-	// Try matching on any IP address.
-	if listen, ok := wg.listeners[(&net.TCPAddr{
-		IP:   net.IP{0, 0, 0, 0},
-		Port: loc.Port,
-	}).String()]; ok {
-		return listen, nil
-	}
-
-	// Fall back to the default root if it exists.
-	if listen, ok := wg.listeners[(&net.TCPAddr{
-		IP:   net.IP{0, 0, 0, 0},
-		Port: 0,
-	}).String()]; ok {
-		return listen, nil
-	}
-
-	return nil, fmt.Errorf("no listener for connection to: %s", loc.String())
-}
-
-type listener struct {
-	closed bool
-	conns  chan *gonet.TCPConn
-	addr   *net.TCPAddr
-}
-
-// Accept implements net.Listener.
-func (l *listener) Accept() (net.Conn, error) {
-	if l.closed {
-		return nil, net.ErrClosed
-	}
-
-	conn := <-l.conns
-
-	return conn, nil
-}
-
-// Addr implements net.Listener.
-func (l *listener) Addr() net.Addr {
-	return l.addr
-}
-
-// Close implements net.Listener.
-func (l *listener) Close() error {
-	if !l.closed {
-		l.closed = true
-		close(l.conns)
-	}
-
-	return nil
-}
-
-var (
-	_ net.Listener = &listener{}
-)
-
-func (wg *Wireguard) ListenTCPAddr(listen string) (net.Listener, error) {
-	ip, port, err := net.SplitHostPort(listen)
-	if err != nil {
-		return nil, err
-	}
-
-	ipString := net.ParseIP(ip)
-	if ipString == nil {
-		return nil, fmt.Errorf("invalid ip: %s", ip)
-	}
-
-	portInt, err := net.LookupPort("tcp", port)
-	if err != nil {
-		return nil, err
-	}
-
-	listener := &listener{
-		addr: net.TCPAddrFromAddrPort(
-			netip.AddrPortFrom(
-				netip.AddrFrom4([4]byte(ipString.To4())),
-				uint16(portInt),
-			),
-		),
-		conns: make(chan *gonet.TCPConn, 8),
-	}
-
-	wg.listeners[listener.addr.String()] = listener
-
-	return listener, nil
-}
-
-func (wg *Wireguard) RemoveTCPListener(listen string) error {
-	ip, port, err := net.SplitHostPort(listen)
-	if err != nil {
-		return err
-	}
-
-	ipString := net.ParseIP(ip)
-	if ipString == nil {
-		return fmt.Errorf("invalid ip: %s", ip)
-	}
-
-	portInt, err := net.LookupPort("tcp", port)
-	if err != nil {
-		return err
-	}
-
-	addr := net.TCPAddrFromAddrPort(
-		netip.AddrPortFrom(
-			netip.AddrFrom4([4]byte(ipString.To4())),
-			uint16(portInt),
-		),
-	)
-
-	if listener, ok := wg.listeners[addr.String()]; ok {
-		delete(wg.listeners, addr.String())
-		close(listener.conns)
-	}
-
-	return nil
-}
-
 func (wg *Wireguard) handleTcp(r *tcp.ForwarderRequest) {
 	id := r.ID()
 
@@ -286,14 +319,7 @@ func (wg *Wireguard) handleTcp(r *tcp.ForwarderRequest) {
 
 	conn := gonet.NewTCPConn(&wq, ep)
 
-	listen, err := wg.getListenerForAddr(loc)
-	if err != nil {
-		slog.Error("error handling tcp conn", "err", err)
-		conn.Close()
-		return
-	}
-
-	listen.conns <- conn
+	wg.handler.HandleConn("tcp", loc.IP, uint16(loc.Port), conn)
 }
 
 func (wg *Wireguard) setupForwarding() error {
@@ -323,7 +349,7 @@ func (wg *Wireguard) GetConfig() (string, error) {
 	return wg.dev.IpcGet()
 }
 
-func NewServer(addr string, mtu int) (*Wireguard, error) {
+func NewServer(addr string, mtu int, handler NetHandler) (*Wireguard, error) {
 	localAddr, err := netip.ParseAddr(addr)
 	if err != nil {
 		return nil, err
@@ -366,7 +392,7 @@ func NewServer(addr string, mtu int) (*Wireguard, error) {
 		stack:     stack,
 		publicKey: pk,
 		allowed:   []string{"0.0.0.0/0"},
-		listeners: make(map[string]*listener),
+		handler:   handler,
 	}
 
 	if err := wg.setupForwarding(); err != nil {
@@ -376,7 +402,7 @@ func NewServer(addr string, mtu int) (*Wireguard, error) {
 	return wg, nil
 }
 
-func NewFromConfig(addr string, mtu int, config string) (*Wireguard, error) {
+func NewFromConfig(addr string, mtu int, config string, handler NetHandler) (*Wireguard, error) {
 	localAddr, err := netip.ParseAddr(addr)
 	if err != nil {
 		return nil, err
@@ -409,9 +435,9 @@ func NewFromConfig(addr string, mtu int, config string) (*Wireguard, error) {
 	}
 
 	wg := &Wireguard{
-		dev:       dev,
-		stack:     stack,
-		listeners: make(map[string]*listener),
+		dev:     dev,
+		stack:   stack,
+		handler: handler,
 	}
 
 	if err := wg.setupForwarding(); err != nil {

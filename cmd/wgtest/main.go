@@ -37,7 +37,8 @@ func checkResponse(wg *wireguard.Wireguard, url string, expected string) error {
 
 func appMain() error {
 	slog.Info("starting server")
-	wg, err := wireguard.NewServer("10.0.0.1", 1420)
+	handler := wireguard.NewSimpleFlowHandler()
+	wg, err := wireguard.NewServer("10.0.0.1", 1420, handler)
 	if err != nil {
 		return fmt.Errorf("failed to create wireguard server: %w", err)
 	}
@@ -50,7 +51,8 @@ func appMain() error {
 	// slog.Info("using config", "config", peer)
 
 	slog.Info("starting client")
-	wg2, err := wireguard.NewFromConfig("10.0.0.2", 1420, peer)
+	handler2 := wireguard.NewSimpleFlowHandler()
+	wg2, err := wireguard.NewFromConfig("10.0.0.2", 1420, peer, handler2)
 	if err != nil {
 		return fmt.Errorf("failed to create wireguard client: %w", err)
 	}
@@ -58,7 +60,7 @@ func appMain() error {
 	slog.Info("dialing basic")
 
 	{
-		listen, err := wg.ListenTCPAddr("100.54.1.10:http")
+		listen, err := handler.ListenTCPAddr("100.54.1.10:http")
 		if err != nil {
 			return fmt.Errorf("failed to listen: %w", err)
 		}
@@ -81,7 +83,7 @@ func appMain() error {
 	slog.Info("test any ip address")
 
 	{
-		listen, err := wg.ListenTCPAddr("0.0.0.0:http")
+		listen, err := handler.ListenTCPAddr("0.0.0.0:http")
 		if err != nil {
 			return fmt.Errorf("failed to listen: %w", err)
 		}
@@ -104,7 +106,7 @@ func appMain() error {
 	slog.Info("other direction")
 
 	{
-		listen, err := wg2.ListenTCPAddr("0.0.0.0:0")
+		listen, err := handler2.ListenTCPAddr("0.0.0.0:0")
 		if err != nil {
 			return fmt.Errorf("failed to listen: %w", err)
 		}
